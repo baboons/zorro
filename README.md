@@ -88,6 +88,54 @@ xattr -dr com.apple.quarantine /Applications/Zorro.app
 
 [releases]: https://github.com/baboons/zorro/releases
 
+## Use with Git
+
+Zorro is **session-based**: it opens a whole repository that's mid-merge and
+resolves *every* conflicted file at once (then commits / continues for you). So
+the workflow is simply "run Zorro in the repo while you have conflicts" — not
+Git's per-file `mergetool` protocol.
+
+**1. Install the app** — drag `Zorro.app` to `/Applications` (see
+[Download](#download)).
+
+**2. Add a `zorro` command** that opens the app on the current directory:
+
+```bash
+# Apple Silicon Homebrew uses /opt/homebrew/bin; otherwise /usr/local/bin.
+cat > /opt/homebrew/bin/zorro <<'EOF'
+#!/bin/sh
+open -a Zorro --args "$PWD"
+EOF
+chmod +x /opt/homebrew/bin/zorro
+```
+
+(`open -a Zorro` reuses the already-running window, so re-running just focuses it.)
+
+**3. Resolve conflicts.** When a merge/rebase/cherry-pick stops with conflicts:
+
+```bash
+git merge feature        # … CONFLICT
+zorro                    # opens Zorro on this repo
+```
+
+Resolve each file (accept sides, edit, or **✦ Resolve all with AI**); files
+autosave as they're completed. When everything is green, click
+**Commit & continue** — Zorro stages the files and finishes the Git operation
+(`git commit` for a merge, `--continue` for a rebase/cherry-pick/revert). The
+**▾** menu offers **Abort** or **Reset --hard** if you'd rather bail out.
+
+**Optional — a Git alias** so you can launch it as a subcommand:
+
+```bash
+git config --global alias.zorro '!zorro'
+git zorro                # same as running `zorro` in the repo
+```
+
+> **Why not `git mergetool`?** That protocol invokes a tool once *per file* with
+> `$LOCAL`/`$REMOTE`/`$MERGED`. Zorro intentionally works on the whole session
+> instead (so it can reason across files and commit when done), which the simple
+> `zorro` command above fits better.
+
 ## Building
 
 GPUI is consumed from the Zed monorepo and requires the Rust toolchain Zed
