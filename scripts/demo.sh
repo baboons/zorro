@@ -175,6 +175,11 @@ git merge feature || true
 echo "Demo repo ready at $DEMO"
 echo "Conflicted files:"
 git diff --name-only --diff-filter=U | sed 's/^/  /'
-echo "Launching Zorro..."
 cd "$ROOT"
-exec cargo run -q -p zorro -- "$DEMO"
+
+# Launch the bundled .app so the Dock/Finder shows the Zorro icon. (Running the
+# bare binary with `cargo run` works too, but a loose executable has no bundle,
+# so macOS gives it the generic icon.) Pass DEMO via --args.
+echo "Bundling and launching Zorro.app…"
+bash scripts/bundle.sh debug
+open dist/Zorro.app --args "$DEMO"
