@@ -1,0 +1,6 @@
+# GPUI (from the Zed monorepo) uses library features stabilized in 1.95.0
+# (e.g. `std::hint::cold_path`), so we pin the same channel Zed builds with.
+[toolchain]
+channel = "1.95.0"
+profile = "minimal"
+components = ["rustfmt", "clippy"]

@@ -1,0 +1,23 @@
+[package]
+name = "zorro"
+description = "Native macOS Git merge-conflict resolver, built on GPUI."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+default-run = "zorro"
+
+[[bin]]
+name = "zorro"
+path = "src/main.rs"
+
+[dependencies]
+zorro-core = { workspace = true }
+# GPUI is not published to crates.io; it is consumed from the Zed monorepo.
+# Pinned to a specific revision for reproducible builds.
+gpui = { git = "https://github.com/zed-industries/zed.git", rev = "e5052961af01e6810f961d6b217376edbe02b106" }
+# `application()` (the platform bootstrap) lives in gpui_platform; font-kit
+# enables system font loading on macOS.
+gpui_platform = { git = "https://github.com/zed-industries/zed.git", rev = "e5052961af01e6810f961d6b217376edbe02b106", features = ["font-kit"] }

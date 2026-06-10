@@ -1,0 +1,16 @@
+[package]
+name = "zorro-core"
+description = "Conflict parsing, merge, diff, and session engine for Zorro."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[lib]
+doctest = true
+
+[dependencies]
+
+[dev-dependencies]
