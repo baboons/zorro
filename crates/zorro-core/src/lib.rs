@@ -38,6 +38,7 @@ pub mod diff;
 pub mod git;
 pub mod session;
 pub mod syntax;
+pub mod update;
 pub mod validate;
 
 pub use ai::{AiConflict, AiError, AiProvider, CliProvider, Confidence, Suggestion};

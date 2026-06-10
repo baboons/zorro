@@ -50,6 +50,9 @@ const GUTTER_W: f32 = 52.0;
 const NUM_W: f32 = 44.0;
 /// Width of the Result column's action sub-gutter (holds the per-hunk undo).
 const ACT_W: f32 = 22.0;
+/// GitHub repo used for the "newer version?" check and release links.
+const REPO: &str = "baboons/zorro";
+const RELEASES_URL: &str = "https://github.com/baboons/zorro/releases";
 
 actions!(
     zorro,
@@ -88,6 +91,9 @@ pub struct Zorro {
     dragging: Option<(usize, f32, [f32; 3])>,
     /// Whether the Continue button's abort/reset menu is open.
     menu_open: bool,
+    /// A newer released version, if the background check found one.
+    update_available: Option<SharedString>,
+    update_dismissed: bool,
     /// One result editor per section of the active file (rebuilt on file switch).
     editors: Vec<Entity<CodeEditor>>,
     _subscriptions: Vec<Subscription>,
@@ -112,6 +118,22 @@ impl Zorro {
         let (editors, subscriptions) = build_editors(texts, language, theme, cx);
         let active_section = first_conflict_section(&session, file_idx);
 
+        // Background "is there a newer release?" check (never blocks the UI).
+        let check = cx
+            .background_executor()
+            .spawn(async move { zorro_core::update::check_latest(REPO) });
+        cx.spawn(async move |this, cx| {
+            if let Some(latest) = check.await {
+                if zorro_core::update::is_newer(&latest, env!("CARGO_PKG_VERSION")) {
+                    let _ = this.update(cx, |this, cx| {
+                        this.update_available = Some(latest.into());
+                        cx.notify();
+                    });
+                }
+            }
+        })
+        .detach();
+
         Self {
             focus_handle,
             session,
@@ -126,6 +148,8 @@ impl Zorro {
             weights: [1.0, 1.0, 1.0],
             dragging: None,
             menu_open: false,
+            update_available: None,
+            update_dismissed: false,
             editors,
             _subscriptions: subscriptions,
         }
@@ -392,6 +416,15 @@ impl Zorro {
             }
         }
         cx.notify();
+    }
+
+    fn dismiss_update(&mut self, cx: &mut Context<Self>) {
+        self.update_dismissed = true;
+        cx.notify();
+    }
+
+    fn open_releases(&mut self, _cx: &mut Context<Self>) {
+        let _ = std::process::Command::new("open").arg(RELEASES_URL).spawn();
     }
 
     fn dismiss_diff3(&mut self, cx: &mut Context<Self>) {
@@ -752,6 +785,10 @@ impl Render for Zorro {
             .text_color(t.text)
             .text_size(px(14.))
             .child(self.render_header())
+            .when(
+                self.update_available.is_some() && !self.update_dismissed,
+                |el| el.child(self.render_update_banner(cx)),
+            )
             .when(self.offer_diff3, |el| el.child(self.render_diff3_banner(cx)))
             .child(
                 div()
@@ -806,6 +843,43 @@ impl Zorro {
                             .text_color(if total == resolved { t.resolved } else { t.pending })
                             .text_size(px(13.))
                             .child(SharedString::from(format!("{resolved} / {total} conflicts"))),
+                    ),
+            )
+    }
+
+    fn render_update_banner(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let t = self.theme;
+        let version = self.update_available.clone().unwrap_or_default();
+        div()
+            .flex()
+            .flex_row()
+            .items_center()
+            .justify_between()
+            .px_4()
+            .py_2()
+            .bg(t.current_bg)
+            .border_b_1()
+            .border_color(t.current)
+            .child(
+                div()
+                    .text_color(t.text)
+                    .text_size(px(12.))
+                    .child(SharedString::from(format!(
+                        "↑ Zorro {version} is available — update with  brew upgrade --cask zorro"
+                    ))),
+            )
+            .child(
+                div()
+                    .flex()
+                    .flex_row()
+                    .gap_2()
+                    .child(
+                        pill("update-notes", "Release notes", t.current, t.bg, t.current)
+                            .on_click(cx.listener(|this, _, _, cx| this.open_releases(cx))),
+                    )
+                    .child(
+                        pill("update-dismiss", "Dismiss", t.text_dim, t.bg, t.border)
+                            .on_click(cx.listener(|this, _, _, cx| this.dismiss_update(cx))),
                     ),
             )
     }

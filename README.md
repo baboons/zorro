@@ -1,6 +1,10 @@
-# Zorro
+<p align="center">
+  <img src="docs/logo.png" alt="Zorro" width="128" height="128">
+</p>
 
-**A modern Git merge conflict resolution tool for macOS.**
+<h1 align="center">Zorro</h1>
+
+<p align="center"><strong>A modern Git merge conflict resolution tool for macOS.</strong></p>
 
 Zorro is a native macOS application focused exclusively on resolving Git merge
 conflicts. Inspired by the JetBrains merge tool, it provides a fast,
@@ -8,6 +12,10 @@ keyboard-driven, developer-friendly interface built on the [Zed](https://zed.dev
 graphics engine (GPUI).
 
 > Resolving merge conflicts should be fast, visual, and safe.
+
+<p align="center">
+  <img src="docs/screenshot.png" alt="Zorro resolving a Java merge conflict" width="900">
+</p>
 
 ---
 
@@ -74,6 +82,21 @@ See [`SPEC.md`](SPEC.md) for the full product vision and roadmap.
 
 ## Download
 
+### Homebrew (recommended)
+
+```bash
+brew install --cask baboons/tap/zorro
+```
+
+This installs `Zorro.app` and a `zorro` command on your `PATH` (which opens the
+app on the current repo — see [Use with Git](#use-with-git)). Upgrade with:
+
+```bash
+brew upgrade --cask zorro
+```
+
+### Manual
+
 Tagged releases attach a prebuilt **Apple Silicon** app —
 `Zorro-aarch64-apple-darwin.zip` — to the [GitHub release page][releases]
 (built by `.github/workflows/release.yml`). Unzip and drag `Zorro.app` to
@@ -86,6 +109,8 @@ It's unsigned, so on first launch macOS Gatekeeper will block it — **right-cli
 xattr -dr com.apple.quarantine /Applications/Zorro.app
 ```
 
+(Zorro notifies you in-app when a newer release is available.)
+
 [releases]: https://github.com/baboons/zorro/releases
 
 ## Use with Git
@@ -95,21 +120,20 @@ resolves *every* conflicted file at once (then commits / continues for you). So
 the workflow is simply "run Zorro in the repo while you have conflicts" — not
 Git's per-file `mergetool` protocol.
 
-**1. Install the app** — drag `Zorro.app` to `/Applications` (see
-[Download](#download)).
+**1. Install** via Homebrew (`brew install --cask baboons/tap/zorro`) — this
+already puts a `zorro` command on your `PATH`, so **skip to step 3**.
 
-**2. Add a `zorro` command** that opens the app on the current directory:
+**2. (Manual installs only.)** If you dragged `Zorro.app` in by hand, add the
+`zorro` command yourself:
 
 ```bash
 # Apple Silicon Homebrew uses /opt/homebrew/bin; otherwise /usr/local/bin.
 cat > /opt/homebrew/bin/zorro <<'EOF'
 #!/bin/sh
-open -a Zorro --args "$PWD"
+exec open -na "Zorro" --args "$PWD"
 EOF
 chmod +x /opt/homebrew/bin/zorro
 ```
-
-(`open -a Zorro` reuses the already-running window, so re-running just focuses it.)
 
 **3. Resolve conflicts.** When a merge/rebase/cherry-pick stops with conflicts:
 

@@ -22,6 +22,14 @@ cp "$BIN" "$APP/Contents/MacOS/zorro"
 chmod +x "$APP/Contents/MacOS/zorro"
 cp "$ROOT/crates/zorro/assets/Zorro.icns" "$APP/Contents/Resources/Zorro.icns"
 
+# CLI launcher: opens the app (with its icon) on the current directory. The
+# Homebrew cask symlinks this onto the PATH as `zorro`.
+cat > "$APP/Contents/Resources/zorro" <<'CLI'
+#!/bin/sh
+exec open -na "Zorro" --args "$PWD"
+CLI
+chmod +x "$APP/Contents/Resources/zorro"
+
 cat > "$APP/Contents/Info.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
