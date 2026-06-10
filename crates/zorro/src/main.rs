@@ -41,7 +41,7 @@ fn main() {
             KeyBinding::new("alt-down", AcceptBoth, None),
             KeyBinding::new("cmd-down", NextFile, None),
             KeyBinding::new("cmd-up", PrevFile, None),
-            KeyBinding::new("cmd-s", SaveFile, None),
+            KeyBinding::new("cmd-enter", SaveFile, None),
             // Result editor — only active while a CodeEditor holds focus.
             KeyBinding::new("left", MoveLeft, Some("CodeEditor")),
             KeyBinding::new("right", MoveRight, Some("CodeEditor")),

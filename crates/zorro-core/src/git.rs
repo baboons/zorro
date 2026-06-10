@@ -131,6 +131,63 @@ impl Repository {
         Ok(())
     }
 
+    /// Stage the given (now-resolved) paths so Git treats them as merged.
+    pub fn stage(&self, paths: &[PathBuf]) -> Result<(), GitError> {
+        for path in paths {
+            let p = path.to_string_lossy().into_owned();
+            run_git(&self.root, ["add", "--", p.as_str()])?;
+        }
+        Ok(())
+    }
+
+    /// Finish the in-progress operation: commit the merge, or continue the
+    /// rebase / cherry-pick / revert.
+    pub fn complete(&self, workflow: Workflow) -> Result<(), GitError> {
+        match workflow {
+            Workflow::Rebase => self.run_noedit(&["rebase", "--continue"]),
+            Workflow::CherryPick => self.run_noedit(&["cherry-pick", "--continue"]),
+            Workflow::Revert => self.run_noedit(&["revert", "--continue"]),
+            // Merge / stash / apply / unknown: a no-edit commit finalizes it.
+            _ => run_git(&self.root, ["commit", "--no-edit"]).map(|_| ()),
+        }
+    }
+
+    /// Abort the in-progress operation, restoring the pre-operation state.
+    pub fn abort(&self, workflow: Workflow) -> Result<(), GitError> {
+        let op = match workflow {
+            Workflow::Rebase => "rebase",
+            Workflow::CherryPick => "cherry-pick",
+            Workflow::Revert => "revert",
+            _ => "merge",
+        };
+        run_git(&self.root, [op, "--abort"]).map(|_| ())
+    }
+
+    /// Hard-reset the working tree to `HEAD`, discarding all uncommitted changes.
+    pub fn reset_hard(&self) -> Result<(), GitError> {
+        run_git(&self.root, ["reset", "--hard", "HEAD"]).map(|_| ())
+    }
+
+    /// Run a git subcommand with the editor suppressed (for `--continue` steps
+    /// that would otherwise open `$EDITOR` for a commit message).
+    fn run_noedit(&self, args: &[&str]) -> Result<(), GitError> {
+        let output = Command::new("git")
+            .current_dir(&self.root)
+            .env("GIT_EDITOR", "true")
+            .env("GIT_SEQUENCE_EDITOR", "true")
+            .args(args)
+            .output()
+            .map_err(GitError::Spawn)?;
+        if output.status.success() {
+            Ok(())
+        } else {
+            Err(GitError::Command {
+                args: args.join(" "),
+                stderr: String::from_utf8_lossy(&output.stderr).into_owned(),
+            })
+        }
+    }
+
     /// Build a full [`MergeSession`] by discovering the conflicted files, loading
     /// the text ones, and classifying the rest.
     pub fn load_session(&self) -> Result<MergeSession, GitError> {

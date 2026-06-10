@@ -166,6 +166,44 @@ fn switching_to_diff3_regenerates_conflicts_with_base() {
 }
 
 #[test]
+fn stage_and_complete_commits_the_merge() {
+    if !git_available() {
+        return;
+    }
+    let repo = TempRepo::new("commit");
+    make_conflicted_repo(&repo.path);
+    let r = Repository::discover(&repo.path).expect("discover");
+    assert_eq!(r.current_workflow(), Workflow::Merge);
+
+    // Resolve by writing clean content, then stage + complete.
+    std::fs::write(repo.path.join("greeting.txt"), "resolved\n").unwrap();
+    r.stage(&[PathBuf::from("greeting.txt")]).expect("stage");
+    r.complete(Workflow::Merge).expect("complete");
+
+    // The merge is finished: no unmerged files, MERGE_HEAD gone, content kept.
+    assert!(r.conflicted_paths().unwrap().is_empty());
+    assert!(!r.git_dir().join("MERGE_HEAD").exists());
+    assert_eq!(
+        std::fs::read_to_string(repo.path.join("greeting.txt")).unwrap(),
+        "resolved\n"
+    );
+}
+
+#[test]
+fn abort_restores_pre_merge_state() {
+    if !git_available() {
+        return;
+    }
+    let repo = TempRepo::new("abort");
+    make_conflicted_repo(&repo.path);
+    let r = Repository::discover(&repo.path).expect("discover");
+
+    r.abort(Workflow::Merge).expect("abort");
+    assert!(r.conflicted_paths().unwrap().is_empty());
+    assert!(!r.git_dir().join("MERGE_HEAD").exists());
+}
+
+#[test]
 fn discover_outside_repo_errors() {
     if !git_available() {
         return;

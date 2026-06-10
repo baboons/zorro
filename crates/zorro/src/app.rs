@@ -16,15 +16,16 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use gpui::{
-    actions, div, prelude::*, px, AnyElement, App, Context, Div, ElementId, Entity, FocusHandle,
-    Render, Rgba, SharedString, Stateful, Subscription, Window,
+    actions, div, prelude::*, px, AnyElement, App, Context, CursorStyle, Div, ElementId, Entity,
+    FocusHandle, MouseButton, MouseDownEvent, MouseMoveEvent, Render, Rgba, SharedString, Stateful,
+    Subscription, Window,
 };
 
 use zorro_core::ai::{AiConflict, AiProvider, CliProvider};
 use zorro_core::conflict::{MergeDocument, Resolution, Section};
 use zorro_core::diff::line_diff_flags;
-use zorro_core::git::Repository;
-use zorro_core::session::{FileStatus, MergeSession};
+use zorro_core::git::{GitError, Repository};
+use zorro_core::session::{FileStatus, MergeSession, Workflow};
 use zorro_core::syntax::{Highlighter, Language};
 use zorro_core::validate::{self, SyntaxIssue};
 
@@ -81,6 +82,12 @@ pub struct Zorro {
     provider: Arc<dyn AiProvider>,
     /// Current AI request state for the focused conflict.
     ai: AiState,
+    /// flex-grow weights for the three main columns (Local · Result · Incoming).
+    weights: [f32; 3],
+    /// Active column-divider drag: (divider index, start x, start weights).
+    dragging: Option<(usize, f32, [f32; 3])>,
+    /// Whether the Continue button's abort/reset menu is open.
+    menu_open: bool,
     /// One result editor per section of the active file (rebuilt on file switch).
     editors: Vec<Entity<CodeEditor>>,
     _subscriptions: Vec<Subscription>,
@@ -116,6 +123,9 @@ impl Zorro {
             offer_diff3,
             provider: Arc::new(CliProvider::claude_code()),
             ai: AiState::Idle,
+            weights: [1.0, 1.0, 1.0],
+            dragging: None,
+            menu_open: false,
             editors,
             _subscriptions: subscriptions,
         }
@@ -293,6 +303,7 @@ impl Zorro {
             editor.update(cx, |e, cx| e.set_text_silent(joined, cx));
         }
         self.status = None;
+        self.autosave(cx);
         cx.notify();
     }
 
@@ -348,6 +359,7 @@ impl Zorro {
             }
         }
         self.status = None;
+        self.autosave(cx);
         cx.notify();
     }
 
@@ -387,51 +399,166 @@ impl Zorro {
         cx.notify();
     }
 
-    fn save_active(&mut self, cx: &mut Context<Self>) {
-        let Some(root) = self.repo_root.clone() else {
-            self.status = Some("No repository — cannot write file".into());
-            cx.notify();
+    /// Autosave: silently write the active file to disk whenever it is fully
+    /// resolved and structurally sound. Called after every mutation.
+    fn autosave(&self, cx: &App) {
+        let Some(root) = self.repo_root.as_ref() else {
             return;
         };
-
-        // Gather owned data so the (immutable) borrow ends before we touch
-        // `self.status`. The Result comes from the editors, not the document.
-        let prepared = {
-            let Some(file) = self.session.files.get(self.file_idx) else {
-                return;
-            };
-            let Some(doc) = file.document.as_ref() else {
-                return;
-            };
-            if !doc.is_fully_resolved() {
-                None
-            } else {
-                Some((file.name(), file.path.clone()))
-            }
-        };
-
-        let Some((name, rel)) = prepared else {
-            self.status = Some("Resolve every conflict before saving".into());
-            cx.notify();
+        let Some(doc) = self.active_doc() else {
             return;
         };
-
-        let rendered = self.result_text(cx);
-        let language = active_language(&self.session, self.file_idx);
-        if let Some(first) = validate::check(&rendered, language).into_iter().next() {
-            self.status = Some(
-                format!("Can't save — {} (line {})", first.message, first.line).into(),
-            );
-            cx.notify();
+        if !doc.is_fully_resolved() {
             return;
         }
+        let rendered = self.result_text(cx);
+        let language = active_language(&self.session, self.file_idx);
+        if !validate::check(&rendered, language).is_empty() {
+            return;
+        }
+        if let Some(file) = self.session.files.get(self.file_idx) {
+            let _ = std::fs::write(root.join(&file.path), rendered);
+        }
+    }
 
-        let abs = root.join(&rel);
-        self.status = Some(match std::fs::write(&abs, rendered) {
-            Ok(()) => format!("Saved {name}").into(),
-            Err(err) => format!("Save failed: {err}").into(),
-        });
+    /// The merged result for any file: the active file from its editors, every
+    /// other file from its document.
+    fn file_result(&self, idx: usize, cx: &App) -> String {
+        if idx == self.file_idx {
+            self.result_text(cx)
+        } else {
+            self.session
+                .files
+                .get(idx)
+                .and_then(|f| f.document.as_ref())
+                .map(|d| d.render())
+                .unwrap_or_default()
+        }
+    }
+
+    /// Whether every file in the session is fully resolved and structurally sound
+    /// (the precondition for committing / continuing).
+    fn all_resolved_and_valid(&self, cx: &App) -> bool {
+        self.session.total_files() > 0
+            && (0..self.session.files.len()).all(|i| self.file_status(i, cx) == FileStatus::Resolved)
+    }
+
+    /// Write every resolved file, stage them, and complete the Git operation
+    /// (commit the merge / continue the rebase, …).
+    fn commit_and_continue(&mut self, cx: &mut Context<Self>) {
+        self.menu_open = false;
+        if !self.all_resolved_and_valid(cx) {
+            return;
+        }
+        let Some(root) = self.repo_root.clone() else {
+            self.status = Some("No repository".into());
+            cx.notify();
+            return;
+        };
+
+        let mut paths = Vec::new();
+        for idx in 0..self.session.files.len() {
+            let rendered = self.file_result(idx, cx);
+            if let Some(file) = self.session.files.get(idx) {
+                let _ = std::fs::write(root.join(&file.path), rendered);
+                paths.push(file.path.clone());
+            }
+        }
+
+        let workflow = self.session.workflow;
+        match Repository::discover(&root) {
+            Ok(repo) => {
+                if let Err(err) = repo.stage(&paths) {
+                    self.status = Some(format!("git add failed: {err}").into());
+                    cx.notify();
+                    return;
+                }
+                match repo.complete(workflow) {
+                    Ok(()) => {
+                        self.reload_session(&repo, cx);
+                        self.status = Some("✓ Committed — merge complete".into());
+                    }
+                    Err(err) => self.status = Some(format!("git failed: {err}").into()),
+                }
+            }
+            Err(err) => self.status = Some(format!("repo error: {err}").into()),
+        }
         cx.notify();
+    }
+
+    fn abort_op(&mut self, cx: &mut Context<Self>) {
+        self.menu_open = false;
+        self.run_git_op(|repo, wf| repo.abort(wf), "Aborted — restored pre-merge state", cx);
+    }
+
+    fn reset_hard_op(&mut self, cx: &mut Context<Self>) {
+        self.menu_open = false;
+        self.run_git_op(|repo, _| repo.reset_hard(), "Reset --hard to HEAD", cx);
+    }
+
+    fn run_git_op(
+        &mut self,
+        op: impl Fn(&Repository, Workflow) -> Result<(), GitError>,
+        ok_msg: &str,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(root) = self.repo_root.clone() else {
+            return;
+        };
+        let workflow = self.session.workflow;
+        match Repository::discover(&root) {
+            Ok(repo) => match op(&repo, workflow) {
+                Ok(()) => {
+                    self.reload_session(&repo, cx);
+                    self.status = Some(ok_msg.to_string().into());
+                }
+                Err(err) => self.status = Some(format!("git failed: {err}").into()),
+            },
+            Err(err) => self.status = Some(format!("repo error: {err}").into()),
+        }
+        cx.notify();
+    }
+
+    fn reload_session(&mut self, repo: &Repository, cx: &mut Context<Self>) {
+        if let Ok(session) = repo.load_session() {
+            self.session = session;
+            self.file_idx = self.session.first_unresolved().unwrap_or(0);
+            self.rebuild_editors(cx);
+        }
+    }
+
+    fn toggle_menu(&mut self, cx: &mut Context<Self>) {
+        self.menu_open = !self.menu_open;
+        cx.notify();
+    }
+
+    // ---- pane resize -------------------------------------------------------
+
+    fn start_drag(&mut self, divider: usize, x: f32) {
+        self.dragging = Some((divider, x, self.weights));
+    }
+
+    fn on_drag_move(&mut self, x: f32, cx: &mut Context<Self>) {
+        let Some((divider, start_x, start)) = self.dragging else {
+            return;
+        };
+        let dw = (x - start_x) / 400.0;
+        let mut w = start;
+        if divider == 0 {
+            w[0] = (start[0] + dw).max(0.2);
+            w[1] = (start[1] - dw).max(0.2);
+        } else {
+            w[1] = (start[1] + dw).max(0.2);
+            w[2] = (start[2] - dw).max(0.2);
+        }
+        self.weights = w;
+        cx.notify();
+    }
+
+    fn end_drag(&mut self, cx: &mut Context<Self>) {
+        if self.dragging.take().is_some() {
+            cx.notify();
+        }
     }
 
     // ---- AI assist ---------------------------------------------------------
@@ -576,6 +703,7 @@ impl Zorro {
         if let Some(editor) = self.editors.get(sec).cloned() {
             editor.update(cx, |e, cx| e.set_text_silent(code, cx));
         }
+        self.autosave(cx);
         cx.notify();
     }
 
@@ -611,7 +739,12 @@ impl Render for Zorro {
             .on_action(cx.listener(|this, _: &AcceptAllRight, _, cx| {
                 this.accept_all(Resolution::Incoming, cx)
             }))
-            .on_action(cx.listener(|this, _: &SaveFile, _, cx| this.save_active(cx)))
+            .on_action(cx.listener(|this, _: &SaveFile, _, cx| this.commit_and_continue(cx)))
+            // Column-divider drag tracking (handles live on the gutters).
+            .on_mouse_move(cx.listener(|this, ev: &MouseMoveEvent, _, cx| {
+                this.on_drag_move(f32::from(ev.position.x), cx)
+            }))
+            .on_mouse_up(MouseButton::Left, cx.listener(|this, _, _, cx| this.end_drag(cx)))
             .flex()
             .flex_col()
             .size_full()
@@ -841,7 +974,6 @@ impl Zorro {
                     .w_full()
                     .px_3()
                     .py_2()
-                    .rounded_md()
                     .text_size(px(13.))
                     .when(active, |el| el.bg(t.selection))
                     .hover(|s| s.bg(t.selection))
@@ -910,7 +1042,6 @@ impl Zorro {
                 .into_any_element();
         };
         let language = active_language(&self.session, self.file_idx);
-        let can_save = doc.is_fully_resolved() && self.active_issue(cx).is_none();
         let file_name = self
             .session
             .files
@@ -1024,14 +1155,32 @@ impl Zorro {
                             .flex()
                             .flex_row()
                             .min_h_full()
-                            .child(stack(left).flex_1().min_w_0().bg(t.bg))
-                            .child(stack(left_gutter).w(px(GUTTER_W)).bg(t.sidebar))
-                            .child(stack(middle).flex_1().min_w_0().bg(t.panel))
-                            .child(stack(right_gutter).w(px(GUTTER_W)).bg(t.sidebar))
-                            .child(stack(right).flex_1().min_w_0().bg(t.bg)),
+                            .child(
+                                stack(left)
+                                    .flex_grow(self.weights[0])
+                                    .flex_basis(px(0.))
+                                    .min_w_0()
+                                    .bg(t.bg),
+                            )
+                            .child(self.resize_handle(left_gutter, 0, cx))
+                            .child(
+                                stack(middle)
+                                    .flex_grow(self.weights[1])
+                                    .flex_basis(px(0.))
+                                    .min_w_0()
+                                    .bg(t.panel),
+                            )
+                            .child(self.resize_handle(right_gutter, 1, cx))
+                            .child(
+                                stack(right)
+                                    .flex_grow(self.weights[2])
+                                    .flex_basis(px(0.))
+                                    .min_w_0()
+                                    .bg(t.bg),
+                            ),
                     ),
             )
-            .child(self.render_footer(can_save, cx))
+            .child(self.render_footer(cx))
             .into_any_element()
     }
 
@@ -1056,9 +1205,10 @@ impl Zorro {
 
     /// Bottom action bar — the JetBrains-style button row: status on the left,
     /// Accept Left / Accept Right / Reset / Save on the right.
-    fn render_footer(&self, can_save: bool, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render_footer(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let t = self.theme;
         let has_conflicts = self.active_conflict_count() > 0;
+        let ready = self.all_resolved_and_valid(cx);
         div()
             .flex()
             .flex_row()
@@ -1093,8 +1243,17 @@ impl Zorro {
                             pill("reset-all", "Reset", t.text_dim, t.bg, t.border)
                                 .on_click(cx.listener(|this, _, _, cx| this.reset_all(cx))),
                         )
-                        // AI assist on the focused conflict.
-                        .child(
+                    }),
+            )
+            // Right: AI assist, status / validation message, then Continue.
+            .child(
+                div()
+                    .flex()
+                    .flex_row()
+                    .items_center()
+                    .gap_3()
+                    .when(has_conflicts, |el| {
+                        el.child(
                             pill("ai-explain", "✦ Explain", t.text_dim, t.bg, t.border)
                                 .on_click(cx.listener(|this, _, _, cx| this.explain_with_ai(cx))),
                         )
@@ -1102,15 +1261,7 @@ impl Zorro {
                             pill("ai-resolve", "✦ Resolve all with AI", t.current, t.current_bg, t.current)
                                 .on_click(cx.listener(|this, _, _, cx| this.resolve_all_with_ai(cx))),
                         )
-                    }),
-            )
-            // Right: status / validation message, then Save.
-            .child(
-                div()
-                    .flex()
-                    .flex_row()
-                    .items_center()
-                    .gap_3()
+                    })
                     .when_some(self.active_issue(cx), |el, issue| {
                         el.child(
                             div()
@@ -1127,11 +1278,97 @@ impl Zorro {
                             el.child(div().text_color(t.text_dim).text_size(px(12.)).child(status))
                         })
                     })
-                    .child(
-                        pill("save", "Save  ⌘S", t.bg, if can_save { t.resolved } else { t.border }, t.border)
-                            .when(!can_save, |el| el.opacity(0.5))
-                            .on_click(cx.listener(|this, _, _, cx| this.save_active(cx))),
-                    ),
+                    .child(self.render_continue(ready, cx)),
+            )
+    }
+
+    /// Continue / commit button with an abort/reset dropdown.
+    fn render_continue(&self, ready: bool, cx: &mut Context<Self>) -> impl IntoElement {
+        let t = self.theme;
+        let label = self.continue_label();
+        // Enabled: dark text on green, with a hover. Disabled: clearly greyed,
+        // no hover (clicking still surfaces the "resolve all first" hint).
+        let continue_btn = if ready {
+            pill("continue", SharedString::from(label), t.bg, t.resolved, t.resolved)
+                .on_click(cx.listener(|this, _, _, cx| this.commit_and_continue(cx)))
+                .into_any_element()
+        } else {
+            // Disabled: plain, non-interactive (no hover, no click, greyed text).
+            div()
+                .flex()
+                .items_center()
+                .justify_center()
+                .px_3()
+                .py_1()
+                .border_1()
+                .border_color(t.border)
+                .bg(t.bg)
+                .text_color(t.text_faint)
+                .text_size(px(12.))
+                .child(SharedString::from(label))
+                .into_any_element()
+        };
+
+        div()
+            .relative()
+            .flex()
+            .flex_row()
+            .items_center()
+            .gap_1()
+            .child(continue_btn)
+            .child(
+                pill("continue-menu", "▾", t.text_dim, t.bg, t.border)
+                    .on_click(cx.listener(|this, _, _, cx| this.toggle_menu(cx))),
+            )
+            .when(self.menu_open, |el| {
+                el.child(
+                    div()
+                        .absolute()
+                        .bottom(px(38.))
+                        .right_0()
+                        .flex()
+                        .flex_col()
+                        .min_w(px(190.))
+                        .bg(t.panel)
+                        .border_1()
+                        .border_color(t.border)
+                        .child(menu_item("abort", "Abort — restore pre-merge", t.text, t).on_click(
+                            cx.listener(|this, _, _, cx| this.abort_op(cx)),
+                        ))
+                        .child(
+                            menu_item("reset-hard", "Reset --hard (discard changes)", t.error, t)
+                                .on_click(cx.listener(|this, _, _, cx| this.reset_hard_op(cx))),
+                        ),
+                )
+            })
+    }
+
+    fn continue_label(&self) -> &'static str {
+        match self.session.workflow {
+            Workflow::Rebase => "Continue rebase ⌘↵",
+            Workflow::CherryPick => "Continue cherry-pick ⌘↵",
+            Workflow::Revert => "Continue revert ⌘↵",
+            _ => "Commit & continue ⌘↵",
+        }
+    }
+
+    /// A gutter column that doubles as a draggable divider for resizing the
+    /// adjacent panes (`divider` 0 = Local|Result, 1 = Result|Incoming).
+    fn resize_handle(
+        &self,
+        children: Vec<AnyElement>,
+        divider: usize,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
+        stack(children)
+            .w(px(GUTTER_W))
+            .bg(self.theme.sidebar)
+            .cursor(CursorStyle::ResizeLeftRight)
+            .on_mouse_down(
+                MouseButton::Left,
+                cx.listener(move |this, ev: &MouseDownEvent, _, _| {
+                    this.start_drag(divider, f32::from(ev.position.x));
+                }),
             )
     }
 
@@ -1575,7 +1812,6 @@ fn gutter_button(
         .justify_center()
         .w(px(20.))
         .h(px(18.))
-        .rounded_md()
         .bg(t.bg)
         .text_color(fg)
         .text_size(px(12.))
@@ -1599,7 +1835,6 @@ fn pill(
         .justify_center()
         .px_3()
         .py_1()
-        .rounded_md()
         .border_1()
         .border_color(border)
         .bg(bg)
@@ -1607,5 +1842,26 @@ fn pill(
         .text_size(px(12.))
         .cursor_pointer()
         .hover(|s| s.border_color(fg))
+        .child(label.into())
+}
+
+/// A row in a dropdown menu. The caller attaches `.on_click(...)`.
+fn menu_item(
+    id: impl Into<ElementId>,
+    label: impl Into<SharedString>,
+    fg: Rgba,
+    t: Theme,
+) -> Stateful<Div> {
+    div()
+        .id(id)
+        .flex()
+        .items_center()
+        .w_full()
+        .px_3()
+        .py_2()
+        .text_color(fg)
+        .text_size(px(12.))
+        .cursor_pointer()
+        .hover(|s| s.bg(t.selection))
         .child(label.into())
 }

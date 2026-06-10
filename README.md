@@ -38,8 +38,14 @@ Early development. What works today:
   - Gutters between the columns carry per-hunk accept (`»`/`«`) and ignore (`✕`)
     actions. Resolving a hunk **clears the rejected side** and swaps the gutter
     to an undo (`↺`), so done hunks read as done.
-  - A bottom action bar with global **« Accept Left / Accept Right » / Reset /
-    Save**. Each conflict is flagged amber (pending) until resolved, then green.
+  - **Resizable panes** — drag the gutters between Local · Result · Incoming.
+  - **Autosave**: resolved files are written to disk automatically (no Save
+    button). A bottom action bar has global **« Accept Left / Accept Right »**.
+  - **Commit & Continue** finishes the Git operation (commit the merge / continue
+    the rebase / cherry-pick / revert) and is disabled until *every* conflict in
+    *every* file is resolved and valid. Its **▾** menu offers **Abort** (restore
+    pre-merge state) and **Reset --hard**.
+  - Each conflict is flagged amber (pending) until resolved, then green.
   - **Structural validation**: a resolved file whose brackets don't balance is
     marked **red** in the sidebar and save is blocked until it's fixed.
   - **diff3 offer**: repos using standard markers get a banner offering to switch
@@ -66,6 +72,22 @@ See [`SPEC.md`](SPEC.md) for the full product vision and roadmap.
 
 ---
 
+## Download
+
+Tagged releases attach a prebuilt **Apple Silicon** app —
+`Zorro-aarch64-apple-darwin.zip` — to the [GitHub release page][releases]
+(built by `.github/workflows/release.yml`). Unzip and drag `Zorro.app` to
+`/Applications`.
+
+It's unsigned, so on first launch macOS Gatekeeper will block it — **right-click
+→ Open** (once), or clear the quarantine flag:
+
+```bash
+xattr -dr com.apple.quarantine /Applications/Zorro.app
+```
+
+[releases]: https://github.com/baboons/zorro/releases
+
 ## Building
 
 GPUI is consumed from the Zed monorepo and requires the Rust toolchain Zed
@@ -84,6 +106,14 @@ cargo run -p zorro -- /path/to/repo
 The app discovers the conflicted files in the repository at the current
 directory (or the path passed as the first argument) and opens a window. With no
 repository or no conflicts, it shows a friendly empty state.
+
+To build a proper `Zorro.app` (with the icon, for the Dock/Finder):
+
+```bash
+./scripts/bundle.sh            # → dist/Zorro.app  (release)
+open dist/Zorro.app
+./scripts/make-icon.sh         # regenerate Zorro.icns from assets/icon.png
+```
 
 ---
 
