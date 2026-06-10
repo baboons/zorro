@@ -85,7 +85,10 @@ See [`SPEC.md`](SPEC.md) for the full product vision and roadmap.
 ### Homebrew (recommended)
 
 ```bash
-brew install --cask baboons/tap/zorro
+brew install --cask baboons/tap/zorro    # auto-taps; no separate `brew tap` needed
+# equivalently:
+#   brew tap baboons/tap
+#   brew install --cask zorro
 ```
 
 This installs `Zorro.app` and a `zorro` command on your `PATH` (which opens the
